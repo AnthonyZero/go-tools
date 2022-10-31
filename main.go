@@ -1,37 +1,30 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"go-tools/cache"
+	"log"
+	"net/http"
+)
 
-type Service interface {
-	Call(key string)
-}
-
-type ServiceFunc func(key string)
-
-func (s ServiceFunc) Call(key string) {
-	s(key)
-}
-
-type EchoService struct{}
-
-func (echo EchoService) Call(key string) {
-	fmt.Println("echo service call, key : ", key)
-}
-
-func PrintKey(key string) {
-	fmt.Println("print key:", key)
-}
-
-func Foo(s Service, key string) {
-	s.Call(key)
+var db = map[string]string{
+	"Tom":  "630",
+	"Jack": "589",
+	"Sam":  "567",
 }
 
 func main() {
-	Foo(new(EchoService), "echo") //struct 作为参数
 
-	Foo(ServiceFunc(func(key string) {
-		fmt.Println("service func, call key,", key)
-	}), "serviceFunc") //匿名函数就地实现 上面的接口型函数
+	cache.NewGroup("scores", 2<<10, cache.GetterFunc(func(key string) ([]byte, error) {
+		log.Println("[DB] search key", key)
+		if v, ok := db[key]; ok {
+			return []byte(v), nil
+		}
+		return nil, fmt.Errorf("%s not exist", key)
+	}))
 
-	Foo(ServiceFunc(PrintKey), "printkey") //普通函数为参数 上面的接口型函数类型
+	addr := "localhost:9999"
+	peers := cache.NewHTTPPool(addr)
+	log.Println("gocache is running at", addr)
+	log.Fatal(http.ListenAndServe(addr, peers))
 }
