@@ -22,6 +22,7 @@ type Group struct {
 	name      string
 	getter    Getter //缓存未命中时获取源数据的回调
 	mainCache cache
+	peers     PeerPicker
 }
 
 var (
@@ -68,7 +69,18 @@ func (g *Group) Get(key string) (ByteView, error) {
 	return g.load(key)
 }
 
+// 使用 PickPeer() 方法选择节点，若非本机节点，则调用 getFromPeer() 从远程获取。若是本机节点或失败，则回退到 getLocally()
 func (g *Group) load(key string) (value ByteView, err error) {
+	if g.peers != nil {
+		log.Printf("consistent hash choose\n")
+		if peer, ok := g.peers.PickPeer(key); ok {
+			if value, err := g.getFromPeer(peer, key); err == nil {
+				log.Printf("[gocache] success get value from peer, %v \n", value)
+				return value, nil
+			}
+			log.Printf("[gocache] Failed to get from peer, %s %v \n", key, err)
+		}
+	}
 	return g.getLocally(key)
 }
 
@@ -76,14 +88,31 @@ func (g *Group) load(key string) (value ByteView, err error) {
 func (g *Group) getLocally(key string) (ByteView, error) {
 	bytes, err := g.getter.Get(key)
 	if err != nil {
+		log.Printf("[gocache] Get Local data fail, the err: %v \n", err)
 		return ByteView{}, err
 
 	}
 	value := ByteView{b: cloneBytes(bytes)}
+	log.Printf("[gocache] Get Local data ok, put value to Cache, %v \n", value.String())
 	g.populateCache(key, value)
 	return value, nil
 }
 
 func (g *Group) populateCache(key string, value ByteView) {
 	g.mainCache.add(key, value)
+}
+
+func (g *Group) RegisterPeers(peers PeerPicker) {
+	if g.peers != nil {
+		panic("RegisterPeerPicker called more than once")
+	}
+	g.peers = peers
+}
+
+func (g *Group) getFromPeer(peer PeerGetter, key string) (ByteView, error) {
+	bytes, err := peer.Get(g.name, key)
+	if err != nil {
+		return ByteView{}, err
+	}
+	return ByteView{b: bytes}, nil
 }
