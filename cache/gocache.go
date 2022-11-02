@@ -3,6 +3,7 @@ package cache
 import (
 	"fmt"
 	"go-tools/lru"
+	"go-tools/singleflight"
 	"log"
 	"sync"
 )
@@ -23,6 +24,7 @@ type Group struct {
 	getter    Getter //缓存未命中时获取源数据的回调
 	mainCache cache
 	peers     PeerPicker
+	loader    *singleflight.Group //fetch once
 }
 
 var (
@@ -44,6 +46,7 @@ func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 			lru:        lru.New(cacheBytes, nil),
 			mu:         sync.Mutex{},
 		},
+		loader: &singleflight.Group{},
 	}
 	groups[name] = g
 	return g
@@ -71,17 +74,23 @@ func (g *Group) Get(key string) (ByteView, error) {
 
 // 使用 PickPeer() 方法选择节点，若非本机节点，则调用 getFromPeer() 从远程获取。若是本机节点或失败，则回退到 getLocally()
 func (g *Group) load(key string) (value ByteView, err error) {
-	if g.peers != nil {
-		log.Printf("consistent hash choose\n")
-		if peer, ok := g.peers.PickPeer(key); ok {
-			if value, err := g.getFromPeer(peer, key); err == nil {
-				log.Printf("[gocache] success get value from peer, %v \n", value)
-				return value, nil
+	viewi, err := g.loader.Do(key, func() (interface{}, error) { //将原来的 load 的逻辑，使用 g.loader.Do 包裹起来即可，这样确保了并发场景下针对相同的 key，load 过程只会调用一次。
+		if g.peers != nil {
+			log.Printf("consistent hash choose\n")
+			if peer, ok := g.peers.PickPeer(key); ok {
+				if value, err := g.getFromPeer(peer, key); err == nil {
+					log.Printf("[gocache] success get value from peer, %v \n", value)
+					return value, nil
+				}
+				log.Printf("[gocache] Failed to get from peer, %s %v \n", key, err)
 			}
-			log.Printf("[gocache] Failed to get from peer, %s %v \n", key, err)
 		}
+		return g.getLocally(key)
+	})
+	if err == nil {
+		return viewi.(ByteView), err //没有err 强转类型 返回数据
 	}
-	return g.getLocally(key)
+	return ByteView{}, nil
 }
 
 //获取源数据，并且将源数据添加到缓存 mainCache 中（通过 populateCache 方法）
