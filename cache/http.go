@@ -3,6 +3,8 @@ package cache
 import (
 	"fmt"
 	"go-tools/consistenthash"
+	pb "go-tools/gocachepb"
+	"google.golang.org/protobuf/proto"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -70,8 +72,17 @@ func (p *HTTPPool) ServeHTTP(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 
+	//writer.Header().Set("Content-Type", "application/octet-stream")
+	//writer.Write(view.ByteSlice())
+	// Write the value to the response body as a proto message.
+	body, err := proto.Marshal(&pb.Response{Value: view.ByteSlice()}) //ServeHTTP() 中使用 proto.Marshal() 编码 HTTP 响应。
+	if err != nil {
+		http.Error(writer, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	writer.Header().Set("Content-Type", "application/octet-stream")
-	writer.Write(view.ByteSlice())
+	writer.Write(body)
 }
 
 func (p *HTTPPool) Set(peers ...string) {
@@ -97,23 +108,53 @@ func (p *HTTPPool) PickPeer(key string) (PeerGetter, bool) {
 	return nil, false
 }
 
-func (h *httpGetter) Get(group string, key string) ([]byte, error) {
-	u := fmt.Sprintf("%v%v/%v", h.baseUrl, url.QueryEscape(group), url.QueryEscape(key))
+//func (h *httpGetter) Get(group string, key string) ([]byte, error) {
+//	u := fmt.Sprintf("%v%v/%v", h.baseUrl, url.QueryEscape(group), url.QueryEscape(key))
+//
+//	res, err := http.Get(u)
+//	if err != nil {
+//		return nil, err
+//	}
+//	defer res.Body.Close()
+//
+//	if res.StatusCode != http.StatusOK {
+//		return nil, fmt.Errorf("server returned : %v", res.StatusCode)
+//	}
+//
+//	bytes, err := ioutil.ReadAll(res.Body)
+//	if err != nil {
+//		return nil, fmt.Errorf("reading response body: %v", err)
+//	}
+//	log.Printf("HTTP Get response data = %v \n", string(bytes))
+//	return bytes, nil
+//}
 
+//Get 将 HTTP 通信的中间载体替换成了 protobuf
+func (h *httpGetter) Get(in *pb.Request, out *pb.Response) error {
+	u := fmt.Sprintf(
+		"%v%v/%v",
+		h.baseUrl,
+		url.QueryEscape(in.GetGroup()),
+		url.QueryEscape(in.GetKey()),
+	)
 	res, err := http.Get(u)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("server returned : %v", res.StatusCode)
+		return fmt.Errorf("server returned: %v", res.Status)
 	}
 
 	bytes, err := ioutil.ReadAll(res.Body)
 	if err != nil {
-		return nil, fmt.Errorf("reading response body: %v", err)
+		return fmt.Errorf("reading response body: %v", err)
+	}
+
+	if err = proto.Unmarshal(bytes, out); err != nil { //Get() 中使用 proto.Unmarshal() 解码 HTTP 响应
+		return fmt.Errorf("decoding response body: %v", err)
 	}
 	log.Printf("HTTP Get response data = %v \n", string(bytes))
-	return bytes, nil
+	return nil
 }
