@@ -22,7 +22,7 @@ var _ Codec = (*GobCodec)(nil) //check
 type Header struct {
 	ServiceMethod string //服务名和方法名
 	Seq           uint64
-	Error         error
+	Error         string
 }
 
 type Codec interface {
